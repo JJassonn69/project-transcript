@@ -44,8 +44,8 @@ class TranscriberState:
 
         # Audio processing
         self.audio_sample_rate: int = 16000
-        self.window_seconds: float = 3.0
-        self.overlap_seconds: float = 1.0
+        self.window_seconds: float = 2.0
+        self.overlap_seconds: float = 0.3
         self.audio_buffer: np.ndarray = np.zeros((0,), dtype=np.float32)  # mono float32 [-1,1]
         self.buffer_start_ts: Optional[float] = None  # seconds
         self.buffer_rate: Optional[int] = None
@@ -174,7 +174,8 @@ def _build_segments_payload(segments: list[TranscriptionSegment], window_start_t
 
 
 def _write_wav(samples: np.ndarray, sample_rate: int) -> str:
-    path = tempfile.mktemp(suffix=".wav")
+    fd, path = tempfile.mkstemp(suffix=".wav")
+    os.close(fd)
     pcm16 = np.clip(samples, -1.0, 1.0)
     pcm16 = (pcm16 * 32767.0).astype(np.int16)
     with wave.open(path, "wb") as wf:
@@ -315,27 +316,23 @@ async def handle_stream_start(request: web.Request) -> web.Response:
         return web.Response(text=str(e), status=500)        
 
 
-async def on_stream_stop():
+async def on_stream_stop(request: Optional[web.Request] = None) -> Optional[web.Response]:
+    """Handle /stream/stop endpoint - resets all stream state."""
     global STATE
-    if STATE is None:
-        return
-    # Optionally send final transcript packet with remaining segments
-    if PROCESSOR is not None and STATE.current_segments:
-        try:
-            segments_payload = _build_segments_payload(STATE.current_segments, 0.0)
-            payload = {
-                "type": "transcript_final",
-                "timestamp_utc": datetime.now(timezone.utc).isoformat(),
-                "segments": segments_payload,
-            }
-            await PROCESSOR.send_data(json.dumps(payload))
-        except Exception:
-            pass
-    # Reset buffers
-    STATE.audio_buffer = np.zeros((0,), dtype=np.float32)
-    STATE.buffer_start_ts = None
-    STATE.buffer_rate = None
-    STATE.stream_start_media_ts = None
+    if STATE is not None:
+        # Reset all timing and buffer variables
+        STATE.audio_buffer = np.zeros((0,), dtype=np.float32)
+        STATE.buffer_start_ts = None
+        STATE.buffer_rate = None
+        STATE.stream_start_media_ts = None
+        STATE.current_segments = []
+        STATE.current_srt = ""
+        STATE.last_sent_data_time = 0.0
+        logger.info("Stream stopped - all counters and buffers reset")
+    
+    if request is not None:
+        return web.Response(text="Stream stopped", status=200)
+    return None
 
 
 
